@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb';
 import { getDB } from '../config/db.js';
 
 const ORDERS = 'orders';
-const PIZZAS = 'pizzas';
+const MENU_ITEMS = 'menuItems';
 
 function isValidObjectId(id) {
   return typeof id === 'string' && /^[a-f\d]{24}$/i.test(id);
@@ -40,6 +40,11 @@ export async function createOrder(req, res) {
     if (!bodyIsObject(body)) {
       return res.status(400).json({ message: 'Request body must be an object' });
     }
+    const allowedFields = ['itemId', 'deliveryDate', 'deliveryAddress', 'message'];
+    const unknownField = Object.keys(body).find((field) => !allowedFields.includes(field));
+    if (unknownField) {
+      return res.status(400).json({ message: `${unknownField} is not allowed` });
+    }
 
     if (!isValidObjectId(body.itemId)) {
       return res.status(400).json({ message: 'A valid itemId is required' });
@@ -60,13 +65,13 @@ export async function createOrder(req, res) {
     }
 
     const db = getDB();
-    const item = await db.collection(PIZZAS).findOne({ _id: new ObjectId(body.itemId) });
+    const item = await db.collection(MENU_ITEMS).findOne({ _id: new ObjectId(body.itemId) });
     if (!item) {
       return res.status(404).json({ message: 'Item not found' });
     }
 
-    if (item.isApproved !== true || item.isAvailable !== true) {
-      return res.status(409).json({ message: 'Item is not approved and available for ordering' });
+    if (item.status !== 'approved') {
+      return res.status(409).json({ message: 'Only approved and active items can be ordered' });
     }
 
     const vendorId = asObjectId(item.vendorId);
@@ -108,6 +113,9 @@ export async function createOrder(req, res) {
       data: { _id: result.insertedId, ...order },
     });
   } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ message: 'An active order already exists for this item and delivery date' });
+    }
     console.error('createOrder error:', err.message);
     return res.status(500).json({ message: 'Internal server error' });
   }

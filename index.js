@@ -6,6 +6,11 @@ import { connectDB } from './src/config/db.js';
 import { createAuth } from './src/config/auth.js';
 import pizzaRoutes from './src/routes/pizzaRoutes.js';
 import orderRoutes from './src/routes/orderRoutes.js';
+import menuRoutes from './src/routes/menuRoutes.js';
+import subscriptionRoutes from './src/routes/subscriptionRoutes.js';
+import adminRoutes from './src/routes/adminRoutes.js';
+import vendorRoutes from './src/routes/vendorRoutes.js';
+import customerRoutes from './src/routes/customerRoutes.js';
 
 // Create an instance of the Express application
 const app = express();
@@ -13,7 +18,20 @@ const PORT = process.env.PORT || 5000;
 
 // Connect to MongoDB first; auth needs the shared client.
 // connectDB() exits the process (code 1) on failure.
-await connectDB();
+const db = await connectDB();
+try {
+    await db.collection('orders').createIndex(
+        { itemId: 1, deliveryDate: 1 },
+        {
+            unique: true,
+            partialFilterExpression: { status: { $in: ['pending', 'accepted'] } },
+            name: 'unique_active_item_delivery_date',
+        },
+    );
+} catch (err) {
+    console.error('Failed to ensure the unique active-order index:', err.message);
+    process.exit(1);
+}
 
 // Better Auth is initialized only after a successful DB connection
 const auth = createAuth();
@@ -26,11 +44,17 @@ app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000', creden
 // Express 5 catch-all syntax: /*splat
 app.all('/api/auth/*splat', toNodeHandler(auth));
 
+app.use('/api/subscriptions', subscriptionRoutes);
+
 app.use(express.json());
 
 // Define routes
 app.use('/api/pizzas', pizzaRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/menu', menuRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/vendors', vendorRoutes);
+app.use('/api/customers', customerRoutes);
 
 app.get('/', (req, res) => {
     res.send('Hello World!');
