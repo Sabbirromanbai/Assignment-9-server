@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { toNodeHandler } from 'better-auth/node';
 import { connectDB } from './src/config/db.js';
 import { createAuth } from './src/config/auth.js';
+import pizzaRoutes from './src/routes/pizzaRoutes.js';
 
 // Create an instance of the Express application
 const app = express();
@@ -27,6 +28,8 @@ app.all('/api/auth/*splat', toNodeHandler(auth));
 app.use(express.json());
 
 // Define routes
+app.use('/api/pizzas', pizzaRoutes);
+
 app.get('/', (req, res) => {
     res.send('Hello World!');
 })
