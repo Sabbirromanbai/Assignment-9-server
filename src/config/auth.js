@@ -60,9 +60,20 @@ export function createAuth() {
         // 2 & 4: role selectable at signup as customer/vendor only — never admin
         if (ctx.path.startsWith('/sign-up')) {
           const role = ctx.body?.role;
-          if (role && !ALLOWED_SIGNUP_ROLES.includes(role)) {
+          if (role !== undefined && !ALLOWED_SIGNUP_ROLES.includes(role)) {
             throw new APIError('BAD_REQUEST', {
               message: 'Role must be "customer" or "vendor"',
+            });
+          }
+
+          if (
+            ctx.path === '/sign-up/email'
+            && (typeof ctx.body?.password !== 'string'
+              || !/[A-Z]/.test(ctx.body.password)
+              || !/[a-z]/.test(ctx.body.password))
+          ) {
+            throw new APIError('BAD_REQUEST', {
+              message: 'Password must include at least one uppercase and one lowercase letter',
             });
           }
         }
