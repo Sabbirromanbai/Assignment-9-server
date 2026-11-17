@@ -23,7 +23,7 @@ There is no working `npm test` (it is the default placeholder that exits 1). The
 
 `dotenv/config` is imported in `index.js`, so `.env` is loaded automatically. Required variables:
 
-- `MONGODB_URI` — full MongoDB Atlas connection string (`mongodb+srv://user:password@cluster0.../?retryWrites=true&w=majority`). Password must be percent-encoded if it contains URI-special characters.
+- `MONGODB_URI` — standard `mongodb://` connection string listing the three Atlas shard hosts explicitly, with `ssl=true`, `replicaSet=atlas-owomm0-shard-0`, `authSource=admin`, `retryWrites=true&w=majority`. The `mongodb+srv://` form is NOT used because it needs DNS SRV lookups, which fail on this machine (dead IPv6 placeholder DNS servers break Node's c-ares resolver). Password must be percent-encoded if it contains URI-special characters.
 - `DB_NAME` — database to use (currently `assignment9`)
 - `CLIENT_URL` — allowed CORS origin (e.g. the frontend dev URL)
 - `PORT` — optional, defaults to `5000`

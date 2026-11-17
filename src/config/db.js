@@ -39,3 +39,14 @@ export function getDB() {
   }
   return db;
 }
+
+/**
+ * Returns the existing shared MongoClient instance.
+ * Throws if called before connectDB() has succeeded.
+ */
+export function getMongoClient() {
+  if (!client) {
+    throw new Error('MongoClient not initialized. Call connectDB() first.');
+  }
+  return client;
+}
