@@ -5,6 +5,7 @@ import { toNodeHandler } from 'better-auth/node';
 import { connectDB } from './src/config/db.js';
 import { createAuth } from './src/config/auth.js';
 import pizzaRoutes from './src/routes/pizzaRoutes.js';
+import orderRoutes from './src/routes/orderRoutes.js';
 
 // Create an instance of the Express application
 const app = express();
@@ -29,6 +30,7 @@ app.use(express.json());
 
 // Define routes
 app.use('/api/pizzas', pizzaRoutes);
+app.use('/api/orders', orderRoutes);
 
 app.get('/', (req, res) => {
     res.send('Hello World!');
