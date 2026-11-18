@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb';
 import { getDB } from '../config/db.js';
+import { validateImageUpload, uploadImageToImgBB } from '../utils/imageUpload.js';
 
 const MENU_ITEMS = 'menuItems';
 const ACTIVE_STATUSES = ['approved'];
@@ -406,40 +407,16 @@ export async function deleteAdminMenuItem(req, res) {
 }
 
 export async function uploadMenuImage(req, res) {
-  if (!process.env.IMGBB_API_KEY) {
-    return res.status(503).json({ message: 'Image uploads are not configured; IMGBB_API_KEY is required' });
-  }
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-    return res.status(400).json({ message: 'Send one image file as the request body' });
-  }
-
   const contentType = req.get('content-type')?.split(';')[0].trim().toLowerCase();
-  if (!IMAGE_TYPES.includes(contentType)) {
-    return res.status(415).json({ message: 'Only JPEG, PNG, and WebP images are supported' });
-  }
-  if (req.body.length > MAX_IMAGE_SIZE) {
-    return res.status(413).json({ message: 'Image must be 10 MB or smaller' });
+  const validation = validateImageUpload(req.body, contentType, MAX_IMAGE_SIZE);
+  if (!validation.ok) {
+    return res.status(validation.status).json({ message: validation.message });
   }
 
   const suppliedName = req.get('x-file-name') ?? 'menu-item';
-  const fileName = suppliedName.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100) || 'menu-item';
 
   try {
-    const form = new FormData();
-    form.append('image', new Blob([req.body], { type: contentType }), fileName);
-    form.append('name', fileName);
-
-    const response = await fetch(
-      `https://api.imgbb.com/1/upload?key=${encodeURIComponent(process.env.IMGBB_API_KEY)}`,
-      { method: 'POST', body: form },
-    );
-    const result = await response.json();
-    const imageUrl = result?.data?.image?.url;
-    if (!response.ok || result?.success !== true || !isImgBBUrl(imageUrl)) {
-      console.error('uploadMenuImage error: ImgBB rejected the upload');
-      return res.status(502).json({ message: 'Image upload provider rejected the image' });
-    }
-
+    const imageUrl = await uploadImageToImgBB(req.body, validation.contentType, suppliedName);
     return res.status(201).json({ message: 'Image uploaded', data: { url: imageUrl } });
   } catch (err) {
     console.error('uploadMenuImage error:', err.message);
