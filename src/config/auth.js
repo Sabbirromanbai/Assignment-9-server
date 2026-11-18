@@ -22,13 +22,20 @@ export function createAuth() {
     };
   }
 
+  const secret = process.env.BETTER_AUTH_SECRET || process.env.AUTH_SECRET;
+  const baseURL = process.env.BETTER_AUTH_URL;
+
   return betterAuth({
+    // Explicit secret and base URL. BETTER_AUTH_SECRET must be provided in .env.
+    secret,
+    baseURL,
+
     // MongoDB adapter reusing the existing shared client
     database: mongodbAdapter(db, { client }),
 
     // Trust only the configured frontend origin (never a wildcard);
     // if CLIENT_URL is unset, Better Auth falls back to trusting baseURL only
-    trustedOrigins: [process.env.CLIENT_URL].filter(Boolean),
+    trustedOrigins: [process.env.CLIENT_URL, baseURL].filter(Boolean),
 
     // Email & password with assignment minimum length
     emailAndPassword: {
@@ -52,8 +59,17 @@ export function createAuth() {
       },
     },
 
-    // JWT plugin
-    plugins: [jwt()],
+    // JWT plugin with issuer and audience pinned to the backend URL
+    plugins: [jwt({ issuer: baseURL, audience: baseURL })],
+
+    // Secure cookies in production; keep local development usable over HTTP.
+    advanced: {
+      useSecureCookies: process.env.NODE_ENV === 'production',
+      defaultCookieAttributes: {
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        secure: process.env.NODE_ENV === 'production',
+      },
+    },
 
     hooks: {
       before: createAuthMiddleware((ctx) => {
