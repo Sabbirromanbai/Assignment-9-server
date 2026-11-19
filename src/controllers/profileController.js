@@ -1,4 +1,9 @@
-import { validateImageUpload, uploadImageToImgBB, MAX_PROFILE_IMAGE_SIZE } from '../utils/imageUpload.js';
+import {
+  getSafeImgBBErrorDetails,
+  validateImageUpload,
+  uploadImageToImgBB,
+  MAX_PROFILE_IMAGE_SIZE,
+} from '../utils/imageUpload.js';
 
 export async function uploadProfileImage(req, res) {
   try {
@@ -13,7 +18,10 @@ export async function uploadProfileImage(req, res) {
 
     return res.status(201).json({ message: 'Image uploaded', data: { url: imageUrl } });
   } catch (err) {
-    console.error('uploadProfileImage error:', err.message);
+    console.error('ImgBB upload failed:', getSafeImgBBErrorDetails(err));
+    if (err.code === 'IMGBB_NOT_CONFIGURED') {
+      return res.status(503).json({ message: 'Image upload is not configured' });
+    }
     return res.status(502).json({ message: 'Image upload failed' });
   }
 }

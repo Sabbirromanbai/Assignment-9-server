@@ -1,6 +1,10 @@
 import { ObjectId } from 'mongodb';
 import { getDB } from '../config/db.js';
-import { validateImageUpload, uploadImageToImgBB } from '../utils/imageUpload.js';
+import {
+  getSafeImgBBErrorDetails,
+  validateImageUpload,
+  uploadImageToImgBB,
+} from '../utils/imageUpload.js';
 
 const MENU_ITEMS = 'menuItems';
 const ACTIVE_STATUSES = ['approved'];
@@ -419,7 +423,10 @@ export async function uploadMenuImage(req, res) {
     const imageUrl = await uploadImageToImgBB(req.body, validation.contentType, suppliedName);
     return res.status(201).json({ message: 'Image uploaded', data: { url: imageUrl } });
   } catch (err) {
-    console.error('uploadMenuImage error:', err.message);
+    console.error('ImgBB upload failed:', getSafeImgBBErrorDetails(err));
+    if (err.code === 'IMGBB_NOT_CONFIGURED') {
+      return res.status(503).json({ message: 'Image upload is not configured' });
+    }
     return res.status(502).json({ message: 'Image upload failed' });
   }
 }
