@@ -7,6 +7,55 @@ import { getDB, getMongoClient } from './db.js';
 const ALLOWED_SIGNUP_ROLES = ['customer', 'vendor'];
 
 /**
+ * Proxies that write `X-Forwarded-For` on Render.
+ *
+ * Public traffic reaches a Render web service as:
+ *   client -> Cloudflare (Render's DDoS/edge layer) -> Render load balancer -> app
+ *
+ * The client cannot control the right-hand entries: each proxy appends the
+ * address it received the request from, so the header arrives as
+ * "<client>, <cloudflare-edge>" (plus an internal hop in some topologies).
+ * The leftmost entry is whatever the caller sent, so it is never used.
+ *
+ * Better Auth walks the header right to left and stops at the first entry that
+ * is not listed here. Only ranges that cannot be a real client address are
+ * listed: Cloudflare's published edge ranges (https://www.cloudflare.com/ips)
+ * and private/loopback space used by Render's internal load balancer.
+ */
+const TRUSTED_PROXIES = [
+  // Cloudflare edge, IPv4
+  '173.245.48.0/20',
+  '103.21.244.0/22',
+  '103.22.200.0/22',
+  '103.31.4.0/22',
+  '141.101.64.0/18',
+  '108.162.192.0/18',
+  '190.93.240.0/20',
+  '188.114.96.0/20',
+  '197.234.240.0/22',
+  '198.41.128.0/17',
+  '162.158.0.0/15',
+  '104.16.0.0/13',
+  '104.24.0.0/14',
+  '172.64.0.0/13',
+  '131.0.72.0/22',
+  // Cloudflare edge, IPv6
+  '2400:cb00::/32',
+  '2606:4700::/32',
+  '2803:f800::/32',
+  '2405:b500::/32',
+  '2405:8100::/32',
+  '2a06:98c0::/29',
+  '2c0f:f248::/32',
+  // Render internal load balancer / loopback
+  '10.0.0.0/8',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+  '127.0.0.0/8',
+  '::1/128',
+];
+
+/**
  * Creates the Better Auth instance. Must be called only after
  * connectDB() has succeeded — getDB()/getMongoClient() throw otherwise.
  */
@@ -65,6 +114,16 @@ export function createAuth() {
     // Secure cookies in production; keep local development usable over HTTP.
     advanced: {
       database: { joins: true },
+      // Resolve the real client IP behind Render's proxy chain. Without this,
+      // a multi-hop X-Forwarded-For yields no address and every client shares
+      // one rate-limit bucket (Better Auth logs a warning once).
+      ipAddress: {
+        // Render forwards the client address in X-Forwarded-For.
+        ipAddressHeaders: ['x-forwarded-for'],
+        // Skip the proxy-written hops (right to left) so a spoofed leftmost
+        // value supplied by the caller is never treated as the client IP.
+        trustedProxies: TRUSTED_PROXIES,
+      },
       useSecureCookies: process.env.NODE_ENV === 'production',
       defaultCookieAttributes: {
         sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
