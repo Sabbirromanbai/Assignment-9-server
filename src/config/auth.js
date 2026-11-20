@@ -108,8 +108,10 @@ export function createAuth() {
       },
     },
 
-    // JWT plugin with issuer and audience pinned to the backend URL
-    plugins: [jwt({ issuer: baseURL, audience: baseURL })],
+    // JWT plugin with issuer and audience pinned to the backend URL.
+    // In Better Auth 1.7.x these options are nested under `jwt`; top-level
+    // issuer/audience values are ignored by the plugin.
+    plugins: [jwt({ jwt: { issuer: baseURL, audience: baseURL } })],
 
     // Secure cookies in production; keep local development usable over HTTP.
     advanced: {

@@ -1,11 +1,11 @@
-import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { createRemoteJWKSet, decodeJwt, jwtVerify } from 'jose';
 import { ObjectId } from 'mongodb';
 import { getDB } from '../config/db.js';
 
 // Reused across requests: jose caches the JWKS and refreshes on unknown kid
-const JWKS = createRemoteJWKSet(
-  new URL(`${process.env.BETTER_AUTH_URL}/api/auth/jwks`)
-);
+const JWKS_URL = new URL('/api/auth/jwks', process.env.BETTER_AUTH_URL);
+const AUTH_DIAGNOSTICS = process.env.AUTH_JWT_DIAGNOSTICS === 'true';
+const JWKS = createRemoteJWKSet(JWKS_URL);
 
 const ISSUER = process.env.BETTER_AUTH_URL;
 const AUDIENCE = process.env.BETTER_AUTH_URL;
@@ -16,34 +16,72 @@ const AUDIENCE = process.env.BETTER_AUTH_URL;
  * - 403: user blocked in the database
  * Attaches fresh DB user to req.user and verified JWT payload to req.jwtPayload.
  */
-export async function authenticate(req, res, next) {
-  try {
-    const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+export function createAuthenticate({
+  jwks = JWKS,
+  issuer = ISSUER,
+  audience = AUDIENCE,
+  findUser = (id) => getDB().collection('user').findOne(
+    { _id: new ObjectId(id) },
+    { projection: {
+      role: 1,
+      isBlocked: 1,
+      businessName: 1,
+      subscriptionPlan: 1,
+      subscriptionExpiresAt: 1,
+      name: 1,
+      email: 1,
+    } }
+  ),
+  diagnostics = AUTH_DIAGNOSTICS,
+} = {}) {
+  return async function authenticateRequest(req, res, next) {
+    const header = req.headers.authorization;
+    const token = (header ?? '').replace(/^Bearer\s+/i, '');
     if (!token) {
+      if (diagnostics) {
+        console.warn('[auth-jwt] request rejected', {
+          reason: 'missing_bearer_token',
+          authorizationHeaderPresent: Boolean(header),
+          expectedIssuer: issuer,
+          expectedAudience: audience,
+        });
+      }
       return res.status(401).json({ message: 'No token provided' });
     }
 
-    const { payload } = await jwtVerify(token, JWKS, {
-      issuer: ISSUER,
-      audience: AUDIENCE,
-    });
+    let payload;
+    try {
+      ({ payload } = await jwtVerify(token, jwks, { issuer, audience }));
+    } catch (err) {
+      if (diagnostics) {
+        let actualClaims = {};
+        try {
+          const { iss, aud, exp } = decodeJwt(token);
+          actualClaims = { issuer: iss ?? null, audience: aud ?? null, expiresAt: exp ?? null };
+        } catch {
+          actualClaims = { malformedJwt: true };
+        }
+
+        console.warn('[auth-jwt] verification failed', {
+          authorizationHeaderPresent: Boolean(header),
+          expectedIssuer: issuer,
+          expectedAudience: audience,
+          actualClaims,
+          errorName: typeof err?.name === 'string' ? err.name.slice(0, 80) : 'UnknownError',
+          errorCode: typeof err?.code === 'string' ? err.code.slice(0, 80) : null,
+          errorMessage: typeof err?.message === 'string'
+            ? err.message.replace(/https?:\/\/\S+/g, '[url]').slice(0, 240)
+            : 'Unknown verification error',
+          jwksUrl: JWKS_URL.origin + JWKS_URL.pathname,
+          jwksLoaded: Boolean(jwks.jwks?.()),
+        });
+      }
+      return res.status(401).json({ message: 'Invalid or expired token' });
+    }
 
     let user;
     try {
-      user = await getDB().collection('user').findOne(
-        { _id: new ObjectId(payload.sub) },
-        {
-          projection: {
-            role: 1,
-            isBlocked: 1,
-            businessName: 1,
-            subscriptionPlan: 1,
-            subscriptionExpiresAt: 1,
-            name: 1,
-            email: 1,
-          },
-        }
-      );
+      user = await findUser(payload.sub);
     } catch {
       // invalid ObjectId in sub (wrong length/format)
       return res.status(401).json({ message: 'Invalid token subject' });
@@ -59,12 +97,11 @@ export async function authenticate(req, res, next) {
 
     req.user = user;
     req.jwtPayload = payload;
-    next();
-  } catch {
-    // covers expired/invalid signature/issuer-audience mismatch from jwtVerify
-    return res.status(401).json({ message: 'Invalid or expired token' });
-  }
+    return next();
+  };
 }
+
+export const authenticate = createAuthenticate();
 
 /**
  * Role-based authorization middleware. Must run after authenticate().
