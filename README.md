@@ -73,6 +73,7 @@ Better Auth endpoints are mounted under `/api/auth`.
 | `PATCH` | `/api/orders/:id/cancel` | Customer | Cancel own pending order |
 | `PATCH` | `/api/orders/:id` | Owning vendor | Accept or reject a pending order |
 | `POST` | `/api/subscriptions/checkout` | Vendor | Create a Premium Checkout session |
+| `POST` | `/api/subscriptions/verify-session` | Vendor | Reconcile a returned Checkout session with Stripe |
 | `POST` | `/api/subscriptions/cancel` | Vendor | Cancel Premium at the current period end |
 | `POST` | `/api/subscriptions/webhook` | Stripe signature | Verify Checkout and subscription events |
 | `GET` | `/api/admin/dashboard` | Admin | Platform counts |
@@ -104,14 +105,14 @@ Better Auth manages its user, session, account, and key data. The application us
 
 - `menuItems`: `vendorId`, `itemName`, `category`, `description`, `price`, `location`, `images`, `status`, `createdAt`.
 - `orders`: `itemId`, `vendorId`, `customerId`, `deliveryDate`, `deliveryAddress`, `message`, `status`, `createdAt`.
-- `transactions`: `vendorId`, `plan`, `amount`, `currency`, `stripeSessionId`, `stripeSubscriptionId`, `status`, `createdAt`. `amount` is stored in Stripe's smallest currency unit.
+- `transactions`: `vendorId`, `plan`, `amount`, `currency`, `stripeSessionId`, `stripeSubscriptionId`, `status`, `paymentStatus`, `subscriptionStatus`, `subscriptionStartAt`, `subscriptionExpiresAt`, `createdAt`, `updatedAt`. `amount` is stored in Stripe's smallest currency unit. `status` remains the compatible payment/transaction status; `subscriptionStatus` records Stripe's subscription state.
 
 Menu status is one of `pending`, `approved`, `rejected`, or `inactive`. Only `approved` items are active and publicly visible. Vendors cannot set approval status; item edits and reactivation require admin approval.
 
 ## Security and verification notes
 
 - Public registration accepts only customer or vendor roles. Admin role assignment must be performed through a trusted administrative process, not public signup.
-- Stripe success redirects do not grant Premium. Only a verified webhook associated with a recorded Checkout session activates the subscription.
+- Stripe success redirects do not grant Premium by themselves. Activation requires either a signed Stripe webhook or an authenticated session check that retrieves the Checkout session and Subscription from Stripe. Both paths update only the recorded transaction for that vendor, never create a duplicate record, never move the subscription expiry backwards, and ignore delayed Stripe events older than the state already recorded.
 - A partial unique MongoDB index prevents concurrent pending/accepted orders for the same item and delivery date.
 - Search terms are escaped before use in MongoDB regular expressions.
 - API query flows for search, filters, and price sorting are implemented in the menu listing endpoint; protected API role checks run after JWT verification and database user lookup.

@@ -34,6 +34,30 @@ try {
     process.exit(1);
 }
 
+// One transaction per Stripe Checkout Session and per Stripe Subscription.
+// The partial filters keep legacy records without those IDs from conflicting.
+try {
+    await db.collection('transactions').createIndex(
+        { stripeSessionId: 1 },
+        {
+            unique: true,
+            partialFilterExpression: { stripeSessionId: { $type: 'string' } },
+            name: 'unique_transaction_stripe_session',
+        },
+    );
+    await db.collection('transactions').createIndex(
+        { stripeSubscriptionId: 1 },
+        {
+            unique: true,
+            partialFilterExpression: { stripeSubscriptionId: { $type: 'string' } },
+            name: 'unique_transaction_stripe_subscription',
+        },
+    );
+} catch (err) {
+    console.error('Failed to ensure transaction indexes:', err.message);
+    process.exit(1);
+}
+
 // Better Auth is initialized only after a successful DB connection
 const auth = createAuth();
 
