@@ -64,6 +64,7 @@ export function createAuth() {
 
     // Secure cookies in production; keep local development usable over HTTP.
     advanced: {
+      database: { joins: true },
       useSecureCookies: process.env.NODE_ENV === 'production',
       defaultCookieAttributes: {
         sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
