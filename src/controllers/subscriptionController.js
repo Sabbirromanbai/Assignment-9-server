@@ -1,6 +1,6 @@
 import Stripe from 'stripe';
 import { ObjectId } from 'mongodb';
-import { getDB } from '../config/db.js';
+import { getDB, getMongoClient } from '../config/db.js';
 
 function getStripe() {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -56,7 +56,10 @@ function getCheckoutVendorId(session) {
  * Prevents a delayed Stripe event from undoing a newer state change.
  * Equal timestamps are allowed because repeated deliveries are idempotent.
  */
-function canApplyStripeEvent(transaction, eventCreated) {
+function canApplyStripeEvent(transaction, eventCreated, eventId = null) {
+  if (eventId && transaction.lastStripeEventId === eventId) {
+    return false;
+  }
   if (!Number.isFinite(eventCreated)) {
     return true;
   }
@@ -66,10 +69,96 @@ function canApplyStripeEvent(transaction, eventCreated) {
 }
 
 /**
- * Grants Premium to a verified vendor without moving the expiry backwards.
- * Repeated webhook deliveries and success-page checks therefore stay idempotent.
+ * Applies a Stripe-verified, paid Checkout Session to the existing pending
+ * transaction. Called only by the signed webhook.
  */
-async function grantPremiumAccess(db, vendorId, period) {
+export async function applyPaidCheckoutSession({
+  db,
+  stripe,
+  checkoutSession,
+  stripeEventId = null,
+  stripeEventCreated = null,
+  subscription: verifiedSubscription = null,
+  dbSession,
+}) {
+  if (
+    checkoutSession.mode !== 'subscription'
+    || checkoutSession.status !== 'complete'
+    || !PAID_CHECKOUT_PAYMENT_STATUSES.includes(checkoutSession.payment_status)
+    || checkoutSession.metadata?.plan !== 'premium'
+  ) {
+    return null;
+  }
+
+  const vendorId = getCheckoutVendorId(checkoutSession);
+  if (!vendorId) {
+    return null;
+  }
+
+  const transaction = await db.collection('transactions').findOne({
+    stripeSessionId: checkoutSession.id,
+    vendorId,
+  }, { session: dbSession });
+  if (!transaction || !canApplyStripeEvent(transaction, stripeEventCreated, stripeEventId)) {
+    return null;
+  }
+
+  const subscriptionId = getSubscriptionId(checkoutSession);
+  if (!subscriptionId) {
+    return null;
+  }
+
+  const subscription = verifiedSubscription ?? await stripe.subscriptions.retrieve(subscriptionId);
+  if (!ACTIVE_SUBSCRIPTION_STATUSES.includes(subscription.status)) {
+    return null;
+  }
+
+  const period = getSubscriptionPeriod(subscription);
+  if (!period.expiry) {
+    throw new Error('Stripe subscription expiry is unavailable');
+  }
+
+  const transactionUpdate = {
+    $set: {
+      plan: 'premium',
+      amount: checkoutSession.amount_total ?? transaction.amount,
+      currency: checkoutSession.currency ?? transaction.currency,
+      stripeSubscriptionId: subscriptionId,
+      paymentStatus: checkoutSession.payment_status,
+      subscriptionStatus: subscription.status,
+      subscriptionStartAt: period.start ?? transaction.subscriptionStartAt ?? null,
+      subscriptionExpiresAt: period.expiry,
+      status: 'paid',
+      updatedAt: new Date(),
+      ...(stripeEventId ? { lastStripeEventId: stripeEventId } : {}),
+      ...(Number.isFinite(stripeEventCreated) ? { lastStripeEventCreated: stripeEventCreated } : {}),
+    },
+  };
+
+  const transactionResult = await db.collection('transactions').updateOne(
+    { _id: transaction._id, stripeSessionId: checkoutSession.id, vendorId },
+    transactionUpdate,
+    { session: dbSession },
+  );
+  if (transactionResult.matchedCount === 0) {
+    throw new Error('Pending transaction changed during Stripe verification');
+  }
+
+  const grant = await grantPremiumAccess(db, vendorId, period, dbSession);
+  if (!grant.matched) {
+    throw new Error('Vendor account was not found for this checkout session');
+  }
+
+  return {
+    vendorId,
+    transactionId: transaction._id,
+    subscriptionId,
+    period,
+    grant,
+  };
+}
+
+async function grantPremiumAccess(db, vendorId, period, session) {
   const user = await db.collection('user').findOne(
     { _id: vendorId, role: 'vendor' },
     {
@@ -78,32 +167,23 @@ async function grantPremiumAccess(db, vendorId, period) {
         subscriptionStartedAt: 1,
         subscriptionExpiresAt: 1,
       },
+      session,
     },
   );
   if (!user) {
     return { matched: false, updated: false, expiresAt: null };
   }
 
-  const currentExpiry = user.subscriptionExpiresAt
-    ? new Date(user.subscriptionExpiresAt)
-    : null;
-  const hasValidCurrentExpiry = Boolean(currentExpiry)
-    && Number.isFinite(currentExpiry.getTime());
+  const currentExpiry = user.subscriptionExpiresAt ? new Date(user.subscriptionExpiresAt) : null;
+  const hasValidCurrentExpiry = Boolean(currentExpiry) && Number.isFinite(currentExpiry.getTime());
   const hasFuturePremium = user.subscriptionPlan === 'premium'
     && hasValidCurrentExpiry
     && currentExpiry.getTime() > Date.now();
-
-  const currentStart = user.subscriptionStartedAt
-    ? new Date(user.subscriptionStartedAt)
-    : null;
-  const hasValidCurrentStart = Boolean(currentStart)
-    && Number.isFinite(currentStart.getTime());
-
+  const currentStart = user.subscriptionStartedAt ? new Date(user.subscriptionStartedAt) : null;
+  const hasValidCurrentStart = Boolean(currentStart) && Number.isFinite(currentStart.getTime());
   const shouldSetExpiry = !hasFuturePremium
-    || (
-      Boolean(period.expiry)
-      && (!hasValidCurrentExpiry || currentExpiry.getTime() < period.expiry.getTime())
-    );
+    || (Boolean(period.expiry)
+      && (!hasValidCurrentExpiry || currentExpiry.getTime() < period.expiry.getTime()));
   const shouldSetStart = Boolean(period.start)
     && (!hasValidCurrentStart || period.start.getTime() > currentStart.getTime());
   const effectiveExpiry = shouldSetExpiry && period.expiry
@@ -123,6 +203,7 @@ async function grantPremiumAccess(db, vendorId, period) {
         ...(shouldSetStart ? { subscriptionStartedAt: period.start } : {}),
       },
     },
+    { session },
   );
 
   return {
@@ -132,113 +213,15 @@ async function grantPremiumAccess(db, vendorId, period) {
   };
 }
 
-/**
- * Applies a Stripe-verified, paid Checkout Session to the existing pending
- * transaction. Used by both the signed webhook and the authenticated success
- * page reconciliation endpoint so either path produces the same DB state.
- */
-async function applyPaidCheckoutSession({
-  db,
-  stripe,
-  session,
-  expectedVendorId = null,
-  stripeEventId = null,
-  stripeEventCreated = null,
-  observedAt = false,
-}) {
-  if (
-    session.mode !== 'subscription'
-    || session.status !== 'complete'
-    || !PAID_CHECKOUT_PAYMENT_STATUSES.includes(session.payment_status)
-  ) {
-    return null;
-  }
-
-  const vendorId = getCheckoutVendorId(session);
-  if (!vendorId) {
-    return null;
-  }
-  if (expectedVendorId && !vendorId.equals(expectedVendorId)) {
-    return null;
-  }
-
-  const transaction = await db.collection('transactions').findOne({
-    stripeSessionId: session.id,
-    vendorId,
-  });
-  if (!transaction || !canApplyStripeEvent(transaction, stripeEventCreated)) {
-    return null;
-  }
-
-  const subscriptionId = getSubscriptionId(session);
-  if (!subscriptionId) {
-    return null;
-  }
-
-  const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-  if (!ACTIVE_SUBSCRIPTION_STATUSES.includes(subscription.status)) {
-    return null;
-  }
-
-  const period = getSubscriptionPeriod(subscription);
-  if (!period.expiry) {
-    throw new Error('Stripe subscription expiry is unavailable');
-  }
-
-  const observedEventCreated = Number.isFinite(stripeEventCreated)
-    ? stripeEventCreated
-    : (observedAt ? Math.floor(Date.now() / 1000) : null);
-
-  const transactionUpdate = {
-    $set: {
-      plan: session.metadata?.plan === 'premium' ? 'premium' : transaction.plan,
-      amount: session.amount_total ?? transaction.amount,
-      currency: session.currency ?? transaction.currency,
-      stripeSubscriptionId: subscriptionId,
-      paymentStatus: session.payment_status,
-      subscriptionStatus: subscription.status,
-      subscriptionStartAt: period.start ?? transaction.subscriptionStartAt ?? null,
-      subscriptionExpiresAt: period.expiry,
-      status: 'paid',
-      updatedAt: new Date(),
-      ...(stripeEventId ? { lastStripeEventId: stripeEventId } : {}),
-      ...(observedEventCreated === null
-        ? {}
-        : { lastStripeEventCreated: observedEventCreated }),
-    },
-  };
-
-  const transactionResult = await db.collection('transactions').updateOne(
-    { _id: transaction._id, stripeSessionId: session.id, vendorId },
-    transactionUpdate,
-  );
-  if (transactionResult.matchedCount === 0) {
-    throw new Error('Pending transaction changed during Stripe verification');
-  }
-
-  const grant = await grantPremiumAccess(db, vendorId, period);
-  if (!grant.matched) {
-    throw new Error('Vendor account was not found for this checkout session');
-  }
-
-  return {
-    vendorId,
-    transactionId: transaction._id,
-    subscriptionId,
-    period,
-    grant,
-  };
-}
-
 async function applySubscriptionLifecycle(
   db,
   subscription,
-  { eventCreated = null, eventId = null } = {},
+  { eventCreated = null, eventId = null, session } = {},
 ) {
   const transaction = await db.collection('transactions').findOne({
     stripeSubscriptionId: subscription.id,
-  });
-  if (!transaction?.vendorId || !canApplyStripeEvent(transaction, eventCreated)) {
+  }, { session });
+  if (!transaction?.vendorId || !canApplyStripeEvent(transaction, eventCreated, eventId)) {
     return null;
   }
 
@@ -266,6 +249,7 @@ async function applySubscriptionLifecycle(
   const transactionResult = await db.collection('transactions').updateOne(
     { _id: transaction._id },
     update,
+    { session },
   );
   if (transactionResult.matchedCount === 0) {
     return null;
@@ -275,7 +259,7 @@ async function applySubscriptionLifecycle(
     if (!period.expiry) {
       throw new Error('Stripe subscription expiry is unavailable');
     }
-    return grantPremiumAccess(db, transaction.vendorId, period);
+    return grantPremiumAccess(db, transaction.vendorId, period, session);
   }
 
   const otherActiveSubscriptions = await db.collection('transactions').countDocuments({
@@ -283,7 +267,7 @@ async function applySubscriptionLifecycle(
     _id: { $ne: transaction._id },
     status: 'paid',
     subscriptionStatus: { $in: ACTIVE_SUBSCRIPTION_STATUSES },
-  });
+  }, { session });
 
   if (otherActiveSubscriptions === 0) {
     await db.collection('user').updateOne(
@@ -292,6 +276,7 @@ async function applySubscriptionLifecycle(
         $set: { subscriptionPlan: 'free' },
         $unset: { subscriptionExpiresAt: '', subscriptionStartedAt: '' },
       },
+      { session },
     );
   }
 
@@ -300,13 +285,13 @@ async function applySubscriptionLifecycle(
 
 async function markCheckoutSessionFailed(
   db,
-  session,
-  { status = 'failed', eventCreated = null, eventId = null } = {},
+  checkoutSession,
+  { status = 'failed', eventCreated = null, eventId = null, session: dbSession } = {},
 ) {
   const transaction = await db.collection('transactions').findOne({
-    stripeSessionId: session.id,
-  });
-  if (!transaction || !canApplyStripeEvent(transaction, eventCreated)) {
+    stripeSessionId: checkoutSession.id,
+  }, { session: dbSession });
+  if (!transaction || !canApplyStripeEvent(transaction, eventCreated, eventId)) {
     return null;
   }
 
@@ -315,15 +300,97 @@ async function markCheckoutSessionFailed(
     {
       $set: {
         status,
-        paymentStatus: session.payment_status ?? 'unpaid',
+        paymentStatus: checkoutSession.payment_status ?? 'unpaid',
         updatedAt: new Date(),
         ...(Number.isFinite(eventCreated) ? { lastStripeEventCreated: eventCreated } : {}),
         ...(eventId ? { lastStripeEventId: eventId } : {}),
       },
     },
+    { session: dbSession },
   );
 
   return result.matchedCount > 0;
+}
+
+export async function processVerifiedWebhookEvent({ db, client, stripe, event }) {
+  let verifiedSubscription = null;
+  if (
+    event.type === 'checkout.session.completed'
+    && event.data.object.metadata?.plan === 'premium'
+  ) {
+    const subscriptionId = getSubscriptionId(event.data.object);
+    if (subscriptionId) {
+      verifiedSubscription = await stripe.subscriptions.retrieve(subscriptionId);
+    }
+  }
+
+  const session = client.startSession();
+  let applied = false;
+  try {
+    await session.withTransaction(async () => {
+      applied = false;
+      try {
+        await db.collection('stripeWebhookEvents').insertOne(
+          {
+            _id: event.id,
+            type: event.type,
+            created: event.created,
+            receivedAt: new Date(),
+          },
+          { session },
+        );
+      } catch (err) {
+        if (err.code === 11000) {
+          const duplicateEventError = new Error('Stripe event was already processed');
+          duplicateEventError.duplicateWebhookEvent = true;
+          throw duplicateEventError;
+        }
+        throw err;
+      }
+
+      const eventContext = {
+        stripeEventId: event.id,
+        eventId: event.id,
+        stripeEventCreated: event.created,
+        eventCreated: event.created,
+        session,
+      };
+      if (event.type === 'checkout.session.completed') {
+        applied = Boolean(await applyPaidCheckoutSession({
+          db,
+          stripe,
+          checkoutSession: event.data.object,
+          stripeEventId: event.id,
+          stripeEventCreated: event.created,
+          subscription: verifiedSubscription,
+          dbSession: session,
+        }));
+      } else if (
+        event.type === 'customer.subscription.created'
+        || event.type === 'customer.subscription.updated'
+        || event.type === 'customer.subscription.deleted'
+      ) {
+        applied = Boolean(await applySubscriptionLifecycle(db, event.data.object, eventContext));
+      } else if (event.type === 'checkout.session.expired' || event.type === 'checkout.session.async_payment_failed') {
+        applied = Boolean(await markCheckoutSessionFailed(
+          db,
+          event.data.object,
+          {
+            ...eventContext,
+            status: event.type === 'checkout.session.expired' ? 'expired' : 'failed',
+          },
+        ));
+      }
+    });
+    return { received: true, applied, duplicate: false };
+  } catch (err) {
+    if (err.duplicateWebhookEvent) {
+      return { received: true, applied: false, duplicate: true };
+    }
+    throw err;
+  } finally {
+    await session.endSession();
+  }
 }
 
 export async function createCheckoutSession(req, res) {
@@ -398,27 +465,87 @@ export async function verifyCheckoutSession(req, res) {
 
   try {
     const session = await stripe.checkout.sessions.retrieve(sessionId);
-    const result = await applyPaidCheckoutSession({
-      db: getDB(),
-      stripe,
-      session,
-      expectedVendorId: req.user._id,
-      observedAt: true,
-    });
 
-    if (!result) {
+    if (
+      session.mode !== 'subscription'
+      || session.status !== 'complete'
+      || !PAID_CHECKOUT_PAYMENT_STATUSES.includes(session.payment_status)
+    ) {
       return res.status(409).json({
-        message: 'Checkout session is not a paid Premium purchase for this vendor',
+        message: 'Checkout session is not a completed, paid Premium subscription',
       });
     }
 
+    const vendorId = getCheckoutVendorId(session);
+    if (!vendorId || !vendorId.equals(req.user._id)) {
+      return res.status(409).json({
+        message: 'Checkout session does not belong to this vendor',
+      });
+    }
+
+    const subscriptionId = getSubscriptionId(session);
+    if (!subscriptionId) {
+      return res.status(409).json({
+        message: 'Checkout session is not linked to a subscription',
+      });
+    }
+
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    if (!ACTIVE_SUBSCRIPTION_STATUSES.includes(subscription.status)) {
+      return res.status(409).json({
+        message: 'Subscription is not active',
+      });
+    }
+
+    if (session.metadata?.plan !== 'premium') {
+      return res.status(409).json({
+        message: 'Checkout session is not for a Premium plan',
+      });
+    }
+
+    const db = getDB();
+    const transaction = await db.collection('transactions').findOne({
+      stripeSessionId: session.id,
+      vendorId: req.user._id,
+    });
+
+    if (!transaction) {
+      return res.status(404).json({
+        message: 'No matching transaction found for this checkout session',
+      });
+    }
+
+    const user = await db.collection('user').findOne(
+      { _id: req.user._id, role: 'vendor' },
+      {
+        projection: {
+          subscriptionPlan: 1,
+          subscriptionExpiresAt: 1,
+        },
+      },
+    );
+
+    const hasActivePremium = Boolean(
+      user
+      && user.subscriptionPlan === 'premium'
+      && user.subscriptionExpiresAt
+      && new Date(user.subscriptionExpiresAt) > new Date()
+    );
+
+    const webhookProcessed = transaction.status === 'paid'
+      && transaction.stripeSubscriptionId === subscriptionId;
+
     return res.status(200).json({
-      message: 'Premium subscription verified',
+      message: 'Checkout session verified',
       data: {
-        activated: result.grant.matched,
-        subscriptionPlan: 'premium',
-        subscriptionExpiresAt: result.grant.expiresAt?.toISOString() ?? null,
-        transactionId: String(result.transactionId),
+        activated: hasActivePremium,
+        webhookProcessed,
+        subscriptionPlan: hasActivePremium ? 'premium' : 'free',
+        subscriptionExpiresAt: hasActivePremium && user.subscriptionExpiresAt
+          ? new Date(user.subscriptionExpiresAt).toISOString()
+          : null,
+        transactionId: String(transaction._id),
+        transactionStatus: transaction.status,
       },
     });
   } catch (err) {
@@ -483,40 +610,13 @@ export async function handleStripeWebhook(req, res) {
   }
 
   try {
-    const db = getDB();
-    const eventContext = {
-      stripeEventId: event.id,
-      eventId: event.id,
-      stripeEventCreated: event.created,
-      eventCreated: event.created,
-    };
-    let applied = false;
-    if (event.type === 'checkout.session.completed') {
-      const result = await applyPaidCheckoutSession({
-        db,
-        stripe,
-        session: event.data.object,
-        ...eventContext,
-      });
-      applied = Boolean(result);
-    } else if (
-      event.type === 'customer.subscription.created'
-      || event.type === 'customer.subscription.updated'
-      || event.type === 'customer.subscription.deleted'
-    ) {
-      applied = Boolean(await applySubscriptionLifecycle(db, event.data.object, eventContext));
-    } else if (event.type === 'checkout.session.expired' || event.type === 'checkout.session.async_payment_failed') {
-      applied = Boolean(await markCheckoutSessionFailed(
-        db,
-        event.data.object,
-        {
-          ...eventContext,
-          status: event.type === 'checkout.session.expired' ? 'expired' : 'failed',
-        },
-      ));
-    }
-
-    return res.status(200).json({ received: true, applied });
+    const result = await processVerifiedWebhookEvent({
+      db: getDB(),
+      client: getMongoClient(),
+      stripe,
+      event,
+    });
+    return res.status(200).json(result);
   } catch (err) {
     console.error('handleStripeWebhook error:', err.message);
     return res.status(500).json({ message: 'Unable to process Stripe event' });

@@ -163,6 +163,13 @@ export function createAuth() {
             message: 'Role cannot be changed after signup',
           });
         }
+
+        // 4: reject email changes through profile update APIs
+        if (ctx.path === '/update-user' && 'email' in (ctx.body ?? {})) {
+          throw new APIError('BAD_REQUEST', {
+            message: 'Email cannot be changed',
+          });
+        }
       }),
     },
     databaseHooks: {

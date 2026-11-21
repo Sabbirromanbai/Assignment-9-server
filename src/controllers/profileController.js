@@ -57,3 +57,53 @@ export async function uploadProfileImage(req, res) {
     return res.status(502).json({ message: 'Image upload failed' });
   }
 }
+
+export async function updateCustomerProfile(req, res) {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ message: 'Request body must be an object' });
+    }
+
+    const allowedFields = ['name', 'image'];
+    const unknownField = Object.keys(req.body).find((field) => !allowedFields.includes(field));
+    if (unknownField) {
+      return res.status(400).json({ message: `${unknownField} cannot be updated here` });
+    }
+
+    const updates = {};
+
+    if (req.body.name !== undefined) {
+      if (typeof req.body.name !== 'string' || req.body.name.trim().length === 0 || req.body.name.trim().length > 100) {
+        return res.status(400).json({ message: 'name must be a non-empty string of at most 100 characters' });
+      }
+      updates.name = req.body.name.trim();
+    }
+
+    if (req.body.image !== undefined) {
+      if (typeof req.body.image !== 'string' || req.body.image.length > 2000) {
+        return res.status(400).json({ message: 'image must be a string of at most 2000 characters' });
+      }
+      if (req.body.image && !/^https:\/\//i.test(req.body.image)) {
+        return res.status(400).json({ message: 'image must be an HTTPS URL' });
+      }
+      updates.image = req.body.image;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ message: 'At least one profile field is required' });
+    }
+
+    const updated = await getDB().collection('user').findOneAndUpdate(
+      { _id: req.user._id, role: 'customer' },
+      { $set: updates },
+      { returnDocument: 'after', projection: { name: 1, image: 1, email: 1 } },
+    );
+    if (!updated) {
+      return res.status(404).json({ message: 'Customer profile not found' });
+    }
+    return res.status(200).json({ message: 'Customer profile updated', data: updated });
+  } catch (err) {
+    console.error('updateCustomerProfile error:', err.message);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+}

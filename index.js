@@ -62,6 +62,15 @@ try {
     process.exit(1);
 }
 
+try {
+    await db.createCollection('stripeWebhookEvents');
+} catch (err) {
+    if (err.code !== 48) {
+        console.error('Failed to ensure Stripe webhook event ledger:', err.message);
+        process.exit(1);
+    }
+}
+
 // Better Auth is initialized only after a successful DB connection
 const auth = createAuth();
 
