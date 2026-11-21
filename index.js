@@ -4,7 +4,6 @@ import 'dotenv/config';
 import { toNodeHandler } from 'better-auth/node';
 import { connectDB } from './src/config/db.js';
 import { createAuth } from './src/config/auth.js';
-import pizzaRoutes from './src/routes/pizzaRoutes.js';
 import orderRoutes from './src/routes/orderRoutes.js';
 import menuRoutes from './src/routes/menuRoutes.js';
 import profileRoutes from './src/routes/profileRoutes.js';
@@ -79,7 +78,6 @@ app.use('/api/subscriptions', subscriptionRoutes);
 app.use(express.json());
 
 // Define routes
-app.use('/api/pizzas', pizzaRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/menu', menuRoutes);
 app.use('/api/profile', profileRoutes);
