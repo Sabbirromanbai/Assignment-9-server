@@ -9,21 +9,45 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function getLast30Days() {
+  const today = new Date();
+  const end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1));
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 30);
+  const dates = Array.from({ length: 30 }, (_, index) => {
+    const date = new Date(start);
+    date.setUTCDate(start.getUTCDate() + index);
+    return date.toISOString().slice(0, 10);
+  });
+  return { start, end, dates };
+}
+
 export async function getAdminDashboard(req, res) {
   try {
     const db = getDB();
-    const [totalUsers, vendors, customers, totalMenuItems, pendingMenuItems, totalTransactions] = await Promise.all([
+    const { start, end, dates } = getLast30Days();
+    const [totalUsers, vendors, customers, totalMenuItems, pendingMenuItems, totalTransactions, revenueRows] = await Promise.all([
       db.collection('user').countDocuments({}),
       db.collection('user').countDocuments({ role: 'vendor' }),
       db.collection('user').countDocuments({ role: 'customer' }),
       db.collection('menuItems').countDocuments({}),
       db.collection('menuItems').countDocuments({ status: 'pending' }),
       db.collection('transactions').countDocuments({}),
+      db.collection('transactions').aggregate([
+        { $match: { status: 'paid', createdAt: { $gte: start, $lt: end } } },
+        { $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'UTC' } },
+          revenue: { $sum: '$amount' },
+        } },
+        { $project: { _id: 0, date: '$_id', revenue: 1 } },
+      ]).toArray(),
     ]);
+    const revenueByDate = new Map(revenueRows.map((row) => [row.date, row.revenue]));
+    const dailyRevenue = dates.map((date) => ({ date, revenue: revenueByDate.get(date) ?? 0 }));
 
     return res.status(200).json({
       message: 'Admin dashboard retrieved',
-      data: { totalUsers, vendors, customers, totalMenuItems, pendingMenuItems, totalTransactions },
+      data: { totalUsers, vendors, customers, totalMenuItems, pendingMenuItems, totalTransactions, dailyRevenue },
     });
   } catch (err) {
     console.error('getAdminDashboard error:', err.message);
