@@ -21,12 +21,17 @@ const PORT = process.env.PORT || 5000;
 // connectDB() exits the process (code 1) on failure.
 const db = await connectDB();
 try {
-    await db.collection('orders').createIndex(
-        { itemId: 1, deliveryDate: 1 },
+    const orders = db.collection('orders');
+    const indexes = await orders.listIndexes().toArray();
+    if (indexes.some((index) => index.name === 'unique_active_item_delivery_date')) {
+        await orders.dropIndex('unique_active_item_delivery_date');
+    }
+    await orders.createIndex(
+        { customerId: 1, itemId: 1, deliveryDate: 1 },
         {
             unique: true,
             partialFilterExpression: { status: { $in: ['pending', 'accepted'] } },
-            name: 'unique_active_item_delivery_date',
+            name: 'unique_active_customer_item_delivery_date',
         },
     );
 } catch (err) {

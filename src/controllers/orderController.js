@@ -88,6 +88,7 @@ export async function createOrder(req, res) {
     }
 
     const duplicate = await db.collection(ORDERS).findOne({
+      customerId: req.user._id,
       itemId,
       deliveryDate,
       status: { $in: ['pending', 'accepted'] },
