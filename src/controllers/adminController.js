@@ -127,7 +127,8 @@ export async function listTransactions(req, res) {
       filter.vendorId = new ObjectId(req.query.vendorId);
     }
 
-    const transactions = await getDB().collection('transactions')
+    const db = getDB();
+    const transactions = await db.collection('transactions')
       .find(filter, {
         projection: {
           vendorId: 1,
@@ -142,7 +143,26 @@ export async function listTransactions(req, res) {
       })
       .sort({ createdAt: -1 })
       .toArray();
-    return res.status(200).json({ message: 'Transactions retrieved', data: transactions });
+    const vendorIds = [...new Map(
+      transactions
+        .filter((transaction) => transaction.vendorId)
+        .map((transaction) => [transaction.vendorId.toString(), transaction.vendorId]),
+    ).values()];
+    const vendors = vendorIds.length === 0
+      ? []
+      : await db.collection('user')
+        .find({ _id: { $in: vendorIds } }, { projection: { name: 1, email: 1 } })
+        .toArray();
+    const vendorsById = new Map(vendors.map((vendor) => [vendor._id.toString(), vendor]));
+    const enrichedTransactions = transactions.map((transaction) => {
+      const vendor = vendorsById.get(transaction.vendorId?.toString());
+      return {
+        ...transaction,
+        vendorName: vendor?.name ?? null,
+        vendorEmail: vendor?.email ?? null,
+      };
+    });
+    return res.status(200).json({ message: 'Transactions retrieved', data: enrichedTransactions });
   } catch (err) {
     console.error('listTransactions error:', err.message);
     return res.status(500).json({ message: 'Internal server error' });

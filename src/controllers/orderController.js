@@ -127,11 +127,36 @@ export async function listMyOrders(req, res) {
     const filter = req.user.role === 'customer'
       ? { customerId: req.user._id }
       : { vendorId: req.user._id };
-    const orders = await getDB()
+    const db = getDB();
+    const orders = await db
       .collection(ORDERS)
       .find(filter)
       .sort({ createdAt: -1 })
       .toArray();
+
+    if (req.user.role === 'vendor') {
+      const customerIds = [...new Map(
+        orders
+          .filter((order) => order.customerId)
+          .map((order) => [order.customerId.toString(), order.customerId]),
+      ).values()];
+      const customers = customerIds.length === 0
+        ? []
+        : await db.collection('user')
+          .find({ _id: { $in: customerIds } }, { projection: { name: 1, email: 1 } })
+          .toArray();
+      const customersById = new Map(customers.map((customer) => [customer._id.toString(), customer]));
+      const enrichedOrders = orders.map((order) => {
+        const customer = customersById.get(order.customerId?.toString());
+        return {
+          ...order,
+          customerName: customer?.name ?? null,
+          customerEmail: customer?.email ?? null,
+        };
+      });
+
+      return res.status(200).json({ message: 'Orders retrieved', data: enrichedOrders });
+    }
 
     return res.status(200).json({ message: 'Orders retrieved', data: orders });
   } catch (err) {
