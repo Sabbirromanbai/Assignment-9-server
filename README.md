@@ -1,125 +1,121 @@
-# PizzaHub Server
+# 🍕 Pizzabari API — Backend Server
 
-PizzaHub is an Express API for a role-based pizza menu and ordering platform. It uses Better Auth with MongoDB, the MongoDB Native Driver, ImgBB for menu images, and Stripe Checkout for vendor Premium subscriptions.
+REST API for the **Pizzabari** pizza ordering platform. It powers authentication, role-based dashboards (Customer / Vendor / Admin), menu and order management, and Stripe-powered Premium subscriptions for vendors.
 
-## Features
+## 🔗 Links
 
-- Better Auth email/password and optional Google OAuth, with JWT verification and server-side role checks.
-- Customer, vendor, and admin access control; blocked users are rejected by protected APIs.
-- Vendor menu management, ImgBB image uploads, admin review, and approved-only public listings.
-- Free vendors may have up to three approved (active) menu items. Pending, rejected, and inactive items do not count as active. Premium is unlimited while its verified subscription is active.
-- Customer orders and vendor order management with ownership checks.
-- Stripe Checkout and signed webhooks for Premium subscription activation, cancellation, and expiration.
-- Admin user management, platform counts, and read-only transaction listing.
+- **Live Website:** https://assignment-9-client-nine.vercel.app/
+- **Client Repository:** https://github.com/Sabbirromanbai/Assignment-9-client
+- **Server Repository:** https://github.com/Sabbirromanbai/Assignment-9-server
 
-## Technology
+## ✨ Features
 
-- Node.js, Express 5, JavaScript ES Modules
-- MongoDB Native Driver
-- Better Auth, MongoDB adapter, JWT
-- Stripe SDK
-- ImgBB API
+- **Authentication with Better Auth** — email/password sign-up with role selection (Customer or Vendor, never Admin) and password rules, plus Google OAuth
+- New Google users get a one-time, server-enforced **role choice** (`roleSelectionPending` flag + `POST /api/profile/choose-role`); roles cannot be changed afterwards
+- **Stateless authorization** — API requests carry a JWT that is verified against the auth server's JWKS endpoint; role middleware guards every protected route, and blocked users are rejected
+- **Menu management** — vendors create/edit/delete items with image upload (ImgBB); free plan is limited to 3 active items; admins moderate (approve/reject) submitted items
+- **Public menu browsing** with search, category & location filters, and price sorting
+- **Orders** — customers order for a specific delivery date; a customer cannot place two active orders for the same item on the same date (enforced both in code and by a partial unique index)
+- **Stripe subscriptions** — Premium checkout, cancellation, and webhook-verified activation/expiry for vendors
+- **Dashboards with chart data** — 30 days of daily orders per customer/vendor, vendor orders by category, and daily platform revenue for the admin
+- **Admin tools** — user search, block/unblock, and a read-only transaction list with vendor names
 
-## Run locally
+## 🛠️ Tech Stack
 
-1. Install dependencies with `npm install`.
-2. Set the environment variables listed below.
-3. Start the server with `node index.js`.
+| Technology            | Purpose                                  |
+| --------------------- | ---------------------------------------- |
+| Node.js + Express 5   | HTTP server and routing                  |
+| MongoDB (native driver) | Database                               |
+| Better Auth           | Authentication, sessions, JWT issuing    |
+| jose                  | JWKS-based JWT verification              |
+| Stripe                | Premium subscription payments + webhooks |
+| ImgBB                 | Menu/profile image hosting               |
 
-The server defaults to port `5000`.
+## 🚀 Getting Started
 
-## Environment variable names
+### Prerequisites
 
-Required for database and authentication configuration:
+- Node.js **>= 20**
+- A MongoDB database (e.g. MongoDB Atlas)
+- A Stripe account and an ImgBB API key (for full functionality)
 
-- `MONGODB_URI`
-- `DB_NAME`
-- `BETTER_AUTH_URL`
+### Installation
 
-Set `BETTER_AUTH_SECRET` to a stable secret in deployed environments. Set `CLIENT_URL` to the frontend origin; the local fallback is `http://localhost:3000`.
+```bash
+# Clone the repository
+git clone https://github.com/Sabbirromanbai/Assignment-9-server.git
+cd Assignment-9-server
 
-Required only for the corresponding integrations:
+# Install dependencies
+npm install
+```
 
-- `IMGBB_API_KEY` — menu image uploads.
-- `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PREMIUM_PRICE_ID` — Premium subscription checkout and webhooks.
+### Environment Variables
 
-Optional:
+Create a `.env` file in the project root:
 
-- `PORT`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
+```env
+PORT=5000
+NODE_ENV=development
+CLIENT_URL=http://localhost:3000
 
-Never commit `.env` files or secret values. Google sign-in is enabled only when both Google variables are provided. Stripe Checkout requires a recurring Premium price configured in Stripe. Configure the Stripe webhook destination as `/api/subscriptions/webhook` and subscribe to `checkout.session.completed`, `checkout.session.expired`, `checkout.session.async_payment_failed`, `customer.subscription.updated`, and `customer.subscription.deleted`.
+MONGODB_URI=your_mongodb_connection_string
+DB_NAME=your_database_name
 
-## API
+BETTER_AUTH_SECRET=your_auth_secret
+BETTER_AUTH_URL=http://localhost:5000
 
-Better Auth endpoints are mounted under `/api/auth`.
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
 
-| Method | Path | Access | Purpose |
-|---|---|---|---|
-| `GET` | `/api/menu` | Public | Approved menu; accepts `search`, `category`, `location`, and `sort=newest\|price_asc\|price_desc` |
-| `POST` | `/api/menu` | Vendor | Create a pending menu item |
-| `GET` | `/api/menu/mine` | Vendor | List own menu items |
-| `PUT` | `/api/menu/:id` | Owning vendor | Update an item; changes return it to pending review |
-| `PATCH` | `/api/menu/:id/availability` | Owning vendor | Deactivate or request reapproval |
-| `DELETE` | `/api/menu/:id` | Owning vendor | Delete an item |
-| `POST` | `/api/menu/images` | Vendor | Upload raw JPEG/PNG/WebP bytes to ImgBB |
-| `GET` | `/api/menu/admin` | Admin | List/filter menu items by search, category, location, status, and sort |
-| `GET` | `/api/menu/admin/pending` | Admin | List pending items |
-| `PATCH` | `/api/menu/admin/:id/status` | Admin | Approve, reject, activate, or deactivate by status |
-| `DELETE` | `/api/menu/admin/:id` | Admin | Delete an inappropriate item |
-| `POST` | `/api/orders` | Customer | Create an order for an approved item |
-| `GET` | `/api/orders/mine` | Customer or vendor | List own orders / orders for own items |
-| `PATCH` | `/api/orders/:id/cancel` | Customer | Cancel own pending order |
-| `PATCH` | `/api/orders/:id` | Owning vendor | Accept or reject a pending order |
-| `POST` | `/api/subscriptions/checkout` | Vendor | Create a Premium Checkout session |
-| `POST` | `/api/subscriptions/verify-session` | Vendor | Reconcile a returned Checkout session with Stripe |
-| `POST` | `/api/subscriptions/cancel` | Vendor | Cancel Premium at the current period end |
-| `POST` | `/api/subscriptions/webhook` | Stripe signature | Verify Checkout and subscription events |
-| `GET` | `/api/admin/dashboard` | Admin | Platform counts |
-| `GET` | `/api/admin/users` | Admin | Search/filter customers and vendors |
-| `PATCH` | `/api/admin/users/:id/block` | Admin | Block or unblock a customer/vendor |
-| `GET` | `/api/admin/transactions` | Admin | Read-only transaction listing |
-| `GET` | `/api/vendors/dashboard` | Vendor | Vendor menu/order/subscription counts |
-| `GET` | `/api/vendors/profile` | Vendor | Read own restaurant profile |
-| `PATCH` | `/api/vendors/profile` | Vendor | Update own name, business name, or image |
-| `GET` | `/api/vendors/:id` | Public | Read public vendor profile |
-| `GET` | `/api/customers/dashboard` | Customer | Customer order counts |
+STRIPE_SECRET_KEY=your_stripe_secret_key
+STRIPE_WEBHOOK_SECRET=your_stripe_webhook_secret
+STRIPE_PREMIUM_PRICE_ID=your_stripe_price_id
 
-Protected API requests must include the JWT in the `Authorization` header. User and vendor ownership values are derived from the verified database user and stored menu item, not request payloads.
+IMGBB_API_KEY=your_imgbb_api_key
+```
 
-The earlier Pizza API remains available separately and uses the legacy `pizzas` collection:
+> Never commit your real `.env` file — it contains database and payment secrets.
 
-| Method | Path | Access | Purpose |
-|---|---|---|---|
-| `GET` | `/api/pizzas` | Customer | Browse available legacy pizzas |
-| `POST` | `/api/pizzas` | Vendor | Create a legacy pizza |
-| `PUT` | `/api/pizzas/:id` | Owning vendor | Update a legacy pizza |
-| `DELETE` | `/api/pizzas/:id` | Owning vendor | Delete a legacy pizza |
+### Run the Server
 
-Assignment 9 menu and order flows use `menuItems`; the legacy pizza collection is not renamed, migrated, or used by the Orders API.
+```bash
+# Start the server
+node index.js
 
-## Database collections
+# Run the test suite
+npm test
+```
 
-Better Auth manages its user, session, account, and key data. The application uses these business collections:
+The API runs at `http://localhost:5000` by default.
 
-- `menuItems`: `vendorId`, `itemName`, `category`, `description`, `price`, `location`, `images`, `status`, `createdAt`.
-- `orders`: `itemId`, `vendorId`, `customerId`, `deliveryDate`, `deliveryAddress`, `message`, `status`, `createdAt`.
-- `transactions`: `vendorId`, `plan`, `amount`, `currency`, `stripeSessionId`, `stripeSubscriptionId`, `status`, `paymentStatus`, `subscriptionStatus`, `subscriptionStartAt`, `subscriptionExpiresAt`, `createdAt`, `updatedAt`. `amount` is stored in Stripe's smallest currency unit. `status` remains the compatible payment/transaction status; `subscriptionStatus` records Stripe's subscription state.
+## 📡 API Overview
 
-Menu status is one of `pending`, `approved`, `rejected`, or `inactive`. Only `approved` items are active and publicly visible. Vendors cannot set approval status; item edits and reactivation require admin approval.
+Authentication endpoints are served by Better Auth under `/api/auth/*`.
 
-## Security and verification notes
+| Area         | Endpoints                                                                 |
+| ------------ | ------------------------------------------------------------------------- |
+| Menu (public) | `GET /api/menu` (search / filter / sort), `GET /api/vendors/:id` (public vendor profile) |
+| Menu (vendor) | `GET /api/menu/mine`, `POST /api/menu`, `PUT /api/menu/:id`, availability toggle, `DELETE /api/menu/:id` |
+| Menu (admin)  | `GET /api/menu/admin`, `GET /api/menu/admin/pending`, `PATCH /api/menu/admin/:id/status`, `DELETE /api/menu/admin/:id` |
+| Orders        | `POST /api/orders`, `GET /api/orders/mine`, `PATCH /api/orders/:id`, `PATCH /api/orders/:id/cancel` |
+| Dashboards    | `GET /api/customers/dashboard`, `GET /api/vendors/dashboard`, `GET /api/admin/dashboard` |
+| Vendor profile | `GET /api/vendors/profile`, `PATCH /api/vendors/profile`                 |
+| Profile       | `POST /api/profile/choose-role`, profile image upload endpoints            |
+| Admin         | `GET /api/admin/users`, `PATCH /api/admin/users/:id/block`, `GET /api/admin/transactions` |
+| Subscriptions | `POST /api/subscriptions/checkout`, `POST /api/subscriptions/cancel`, `POST /api/subscriptions/webhook` |
 
-- Public registration accepts only customer or vendor roles. Admin role assignment must be performed through a trusted administrative process, not public signup.
-- Stripe success redirects do not grant Premium by themselves. Activation requires either a signed Stripe webhook or an authenticated session check that retrieves the Checkout session and Subscription from Stripe. Both paths update only the recorded transaction for that vendor, never create a duplicate record, never move the subscription expiry backwards, and ignore delayed Stripe events older than the state already recorded.
-- A partial unique MongoDB index prevents concurrent pending/accepted orders for the same item and delivery date.
-- Search terms are escaped before use in MongoDB regular expressions.
-- API query flows for search, filters, and price sorting are implemented in the menu listing endpoint; protected API role checks run after JWT verification and database user lookup.
+## 🧩 Implementation Notes
 
-## Submission links
+- **Duplicate-order rule:** the check and the database index are scoped per customer — `{ customerId, itemId, deliveryDate }` with a partial filter on active (`pending`/`accepted`) orders — so one customer cannot double-book an item for a date, while different customers can still order the same item for the same date.
+- **JWT verification:** protected routes verify the Bearer token with `jose` against the Better Auth JWKS endpoint (issuer and audience pinned to the backend URL), then load the user to enforce role and blocked-status checks.
+- **Stripe webhooks are the source of truth** for Premium: a subscription becomes active only after the webhook confirms payment, and cancellation/expiry are handled from webhook events — never from the browser redirect alone.
+- **Server-controlled fields:** role changes, blocking, and subscription fields are marked `input: false` in Better Auth or guarded in middleware, so clients cannot set them directly.
 
-- Server repository: https://github.com/Sabbirromanbai/Assignment-9-server
-- Client repository: not configured in this backend repository.
-- Live site: not configured.
-- Admin test credentials: provision securely for the deployed environment; do not store credentials in this repository.
+## 👨‍💻 Author
+
+**Sabbir Roman**
+
+- GitHub: https://github.com/Sabbirromanbai
+- Portfolio: https://my-protfolio-bice-chi.vercel.app/
+- LinkedIn: https://www.linkedin.com/in/md-sabbir-hossen-9000593b6/
