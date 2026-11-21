@@ -2,7 +2,7 @@
 import express from 'express';
 import { authenticate } from '../middlewares/auth.js';
 import { profileImageUploadRateLimit } from '../middlewares/uploadRateLimit.js';
-import { uploadProfileImage } from '../controllers/profileController.js';
+import { chooseRole, uploadProfileImage } from '../controllers/profileController.js';
 
 const router = Router();
 
@@ -10,6 +10,8 @@ const rawImage = express.raw({
   type: ['image/jpeg', 'image/png', 'image/webp'],
   limit: '5mb',
 });
+
+router.post('/choose-role', authenticate, chooseRole);
 
 // Public upload used during signup, before authentication.
 router.post(

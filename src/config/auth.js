@@ -101,6 +101,7 @@ export function createAuth() {
       additionalFields: {
         // Client-selectable at SIGNUP ONLY (validated in the hook below)
         role: { type: 'string', defaultValue: 'customer' },
+        roleSelectionPending: { type: 'boolean', defaultValue: false, input: false },
         isBlocked: { type: 'boolean', defaultValue: false, input: false },
         businessName: { type: 'string', required: false, input: false },
         subscriptionPlan: { type: 'string', defaultValue: 'free', input: false },
@@ -163,6 +164,17 @@ export function createAuth() {
           });
         }
       }),
+    },
+    databaseHooks: {
+      user: {
+        create: {
+          before: async (user, context) => {
+            if (context?.path === '/callback/:id') {
+              return { data: { roleSelectionPending: true } };
+            }
+          },
+        },
+      },
     },
   });
 }
